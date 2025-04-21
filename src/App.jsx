@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { Heap } from 'heap-js';
+import { Router, Package } from 'lucide-react';
 
 function App() {
   const [network, setNetwork] = useState({
@@ -34,7 +36,9 @@ function App() {
   const [simulationSteps, setSimulationSteps] = useState([]);
   const [showSimulationLog, setShowSimulationLog] = useState(false);
   const [simulationLog, setSimulationLog] = useState([]);
-
+  const [animationProgress, setAnimationProgress] = useState(0);
+  const [currentPathSegment, setCurrentPathSegment] = useState(0);
+  
   const createAdjacencyList = useCallback(() => {
     const adjacencyList = {};
     network.nodes.forEach(node => {
@@ -54,58 +58,49 @@ function App() {
     const adjacencyList = createAdjacencyList();
     const nodes = network.nodes.map(n => n.id);  
     const distances = {};
-    const previous = {}; 
-    const unvisited = new Set(nodes); 
-    const steps = []; 
-    const log = []; 
+    const previous = {};
+    const steps = [];
+    const log = [];
+  
+    
+    const minHeap = new Heap((a, b) => a.priority - b.priority);
+  
     for (let node of nodes) {
-      if (node === start) {
-        distances[node] = 0;
-      } else {
-        distances[node] = Infinity;
-      }
+      distances[node] = node === start ? 0 : Infinity;
       previous[node] = null;
     }
+  
+    minHeap.push({ node: start, priority: 0 });
     log.push(`Starting Dijkstra's algorithm from node ${start}`);
     log.push("Initial distances: " + JSON.stringify(distances));
-    while (unvisited.size > 0) {
-      
-      let currentNode = null;
-      let smallestDistance = Infinity;
-      for (let node of unvisited) {
-        if (distances[node] < smallestDistance) {
-          smallestDistance = distances[node];
-          currentNode = node;
-        }
-      }     
-      if (smallestDistance === Infinity) {
-        break;
-      }
-      log.push(`Visiting node ${currentNode} with distance ${distances[currentNode]}`);      
+  
+    while (!minHeap.isEmpty()) {
+      const { node: currentNode, priority } = minHeap.pop();
+  
+      if (priority > distances[currentNode]) continue;
+  
+      log.push(`Visiting node ${currentNode} with distance ${distances[currentNode]}`);
       steps.push({
         currentNode,
-        distances: {...distances},
-        previous: {...previous},
-        unvisited: [...unvisited]
-      });      
-      unvisited.delete(currentNode);     
+        distances: { ...distances },
+        previous: { ...previous },
+      });
+  
       for (let neighbor of adjacencyList[currentNode]) {
-        if (unvisited.has(neighbor.node)) {
-          const potentialDistance = distances[currentNode] + neighbor.weight;
-          if (potentialDistance < distances[neighbor.node]) {
-            distances[neighbor.node] = potentialDistance;
-            previous[neighbor.node] = currentNode;
-            log.push(`Updated distance to ${neighbor.node} via ${currentNode}: ${potentialDistance}`);
-          }
+        const potentialDistance = distances[currentNode] + neighbor.weight;
+        if (potentialDistance < distances[neighbor.node]) {
+          distances[neighbor.node] = potentialDistance;
+          previous[neighbor.node] = currentNode;
+          minHeap.push({ node: neighbor.node, priority: potentialDistance });
+          log.push(`Updated distance to ${neighbor.node} via ${currentNode}: ${potentialDistance}`);
         }
       }
     }
-
+  
     log.push("Final distances: " + JSON.stringify(distances));
     log.push("Final previous nodes: " + JSON.stringify(previous));
     return { distances, previous, steps, log };
   }, [network, createAdjacencyList]);
- 
   const distanceVector = useCallback(() => {
     const adjacencyList = createAdjacencyList();
     const nodes = network.nodes.map(n => n.id);    
@@ -227,6 +222,52 @@ function App() {
   const handleMouseUp = () => {
     setDraggedNode(null);
   };  
+  useEffect(() => {
+    if (!isSimulating || currentStep >= routingPath.length || currentStep === 0) return;
+    
+    const sourceNodeId = routingPath[currentStep - 1];
+    const targetNodeId = routingPath[currentStep];
+    
+    const sourceNode = network.nodes.find(n => n.id === sourceNodeId);
+    const targetNode = network.nodes.find(n => n.id === targetNodeId);
+    
+    if (!sourceNode || !targetNode) return;
+    
+    
+    const link = network.links.find(l => 
+      (l.source === sourceNodeId && l.target === targetNodeId) || 
+      (l.source === targetNodeId && l.target === sourceNodeId)
+    );
+    
+    const animationDuration = simulationSpeed * (link ? link.weight : 1) / 5;
+    const animationFrames = 60; 
+    const frameDuration = animationDuration / animationFrames;
+    
+    setCurrentPathSegment(currentStep - 1);
+    
+    let frame = 0;
+    const animate = () => {
+      const progress = frame / animationFrames;
+      setAnimationProgress(progress);
+      
+      
+      const x = sourceNode.x + (targetNode.x - sourceNode.x) * progress;
+      const y = sourceNode.y + (targetNode.y - sourceNode.y) * progress;
+      setPacketPosition({ x, y });
+      
+      frame++;
+      
+      if (frame <= animationFrames) {
+        setTimeout(animate, frameDuration);
+      } else {
+        
+        setCurrentStep(prev => prev + 1);
+      }
+    };
+    
+    animate();
+    
+  }, [isSimulating, currentStep, routingPath, network, simulationSpeed]);
   const runSimulation = () => {
     setIsSimulating(true);
     setCurrentStep(0);
@@ -254,9 +295,20 @@ function App() {
       }     
       logEntries = log;
       setSimulationLog(log);
-    }    
+    }
+    
     setRoutingPath(path);
-    setPacketPosition(sourceNode);
+    
+    
+    if (path.length > 0) {
+      const startNode = network.nodes.find(n => n.id === path[0]);
+      if (startNode) {
+        setPacketPosition({ x: startNode.x, y: startNode.y });
+      }
+      
+      setCurrentStep(1);
+    }
+    
     setSimulationSteps(path.map((node, index) => ({
       step: index,
       node,
@@ -266,23 +318,17 @@ function App() {
           ? `Packet arrives at destination router ${node}`
           : `Packet forwarded through router ${node}`
     })));
-  };  
+  }; 
   useEffect(() => {
-    if (!isSimulating || currentStep >= routingPath.length) return;  
-    const timer = setTimeout(() => {
-      setPacketPosition(routingPath[currentStep]);
-      setCurrentStep(prev => prev + 1);     
-      if (currentStep === routingPath.length - 1) {
-        setTimeout(() => {
-          setIsSimulating(false);
-          setPacketPosition(null);
-        }, simulationSpeed);
-      }
-    }, simulationSpeed);
+    if (!isSimulating || currentStep <= 0) return;
     
-    return () => clearTimeout(timer);
+    
+    if (currentStep >= routingPath.length) {
+      setTimeout(() => {
+        setIsSimulating(false);
+      }, simulationSpeed);
+    }
   }, [isSimulating, currentStep, routingPath, simulationSpeed]);
- 
   const addRouter = () => {
     const newId = String.fromCharCode(65 + network.nodes.length);
     setNetwork(prev => ({
@@ -317,10 +363,11 @@ function App() {
   
   const resetSimulation = () => {
     setIsSimulating(false);
-    setPacketPosition(null);
-    setRoutingPath([]);
     setCurrentStep(0);
+    setRoutingPath([]);
     setSimulationSteps([]);
+    setAnimationProgress(0);
+    setCurrentPathSegment(0);
   };
 
   return (
@@ -467,102 +514,110 @@ function App() {
           <div className="bg-white rounded-lg shadow-md p-4 flex-1">
             <h2 className="text-lg font-semibold mb-2">Network Topology</h2>
             <svg 
-              width="600" 
-              height="400" 
-              className="border border-gray-300"
-              onMouseMove={handleMouseMove}
-              onMouseUp={handleMouseUp}
-              onMouseLeave={handleMouseUp}
-            >
-              {network.links.map((link, idx) => {
-                const sourceNode = network.nodes.find(n => n.id === link.source);
-                const targetNode = network.nodes.find(n => n.id === link.target);
+                width="600" 
+                height="400" 
+                className="border border-gray-300"
+                onMouseMove={handleMouseMove}
+                onMouseUp={handleMouseUp}
+                onMouseLeave={handleMouseUp}
+              >
+                {network.links.map((link, idx) => {
+                  const sourceNode = network.nodes.find(n => n.id === link.source);
+                  const targetNode = network.nodes.find(n => n.id === link.target);
+                  
+                  if (!sourceNode || !targetNode) return null;
+                  
+                  const isRoutingLink = routingPath.length > 1 && routingPath.some((node, i) => {
+                    if (i === routingPath.length - 1) return false;
+                    return (node === link.source && routingPath[i + 1] === link.target) ||
+                            (node === link.target && routingPath[i + 1] === link.source);
+                  });
+                  return (
+                    <g key={`link-${idx}`}>
+                      <line 
+                        x1={sourceNode.x} 
+                        y1={sourceNode.y} 
+                        x2={targetNode.x} 
+                        y2={targetNode.y} 
+                        stroke={isRoutingLink ? "#ff6700" : "#999"}
+                        strokeWidth={isRoutingLink ? 3 : 1}
+                      />
+                      <text 
+                        x={(sourceNode.x + targetNode.x) / 2} 
+                        y={(sourceNode.y + targetNode.y) / 2 - 10} 
+                        fill="black" 
+                        textAnchor="middle" 
+                        fontSize="12"
+                        className="bg-white"
+                      >
+                        {link.weight}
+                      </text>
+                    </g>
+                  );
+                })}
                 
-                if (!sourceNode || !targetNode) return null;
+                {/* Nodes with Router icons */}
+                {network.nodes.map(node => {
+                  const isSource = node.id === sourceNode;
+                  const isDest = node.id === destNode;
+                  const isActive = routingPath[currentStep] === node.id;
+                  const isInPath = routingPath.includes(node.id);
+                  
+                  let fillColor = "#ddd";
+                  if (isSource) fillColor = "#4CAF50";
+                  if (isDest) fillColor = "#F44336";
+                  if (isActive) fillColor = "#2196F3";
+                  if (isInPath && !isSource && !isDest && !isActive) fillColor = "#FFC107";
+                  
+                  return (
+                    <g key={`node-${node.id}`}>
+                      <circle 
+                        cx={node.x} 
+                        cy={node.y} 
+                        r={isActive ? 18 : 15}
+                        fill={fillColor} 
+                        stroke={isActive ? "#0D47A1" : "#666"}
+                        strokeWidth={isActive ? 3 : 1}
+                        onMouseDown={(e) => handleMouseDown(node.id, e)}
+                        style={{ cursor: 'move' }}
+                      />
+                      <text 
+                        x={node.x} 
+                        y={node.y + 5} 
+                        textAnchor="middle" 
+                        fill="#000" 
+                        fontSize="14" 
+                        fontWeight="bold"
+                      >
+                        {node.id}
+                      </text>
+                      
+                      {/* Router icon at bottom right of the node */}
+                      <foreignObject
+                        x={node.x + 8} 
+                        y={node.y + 8} 
+                        width="20" 
+                        height="20"
+                        onMouseDown={(e) => handleMouseDown(node.id, e)}
+                      >
+                        <Router size={16} />
+                      </foreignObject>
+                    </g>
+                  );
+                })}
                 
-                const isRoutingLink = routingPath.length > 1 && routingPath.some((node, i) => {
-                  if (i === routingPath.length - 1) return false;
-                  return (node === link.source && routingPath[i + 1] === link.target) ||
-                         (node === link.target && routingPath[i + 1] === link.source);
-                });
-                return (
-                  <g key={`link-${idx}`}>
-                    <line 
-                      x1={sourceNode.x} 
-                      y1={sourceNode.y} 
-                      x2={targetNode.x} 
-                      y2={targetNode.y} 
-                      stroke={isRoutingLink ? "#ff6700" : "#999"}
-                      strokeWidth={isRoutingLink ? 3 : 1}
-                    />
-                    <text 
-                      x={(sourceNode.x + targetNode.x) / 2} 
-                      y={(sourceNode.y + targetNode.y) / 2 - 10} 
-                      fill="black" 
-                      textAnchor="middle" 
-                      fontSize="12"
-                      className="bg-white"
-                    >
-                      {link.weight}
-                    </text>
-                  </g>
-                );
-              })}
-              {network.nodes.map(node => {
-                const isSource = node.id === sourceNode;
-                const isDest = node.id === destNode;
-                const isActive = node.id === packetPosition;
-                const isInPath = routingPath.includes(node.id);
-                
-                let fillColor = "#ddd";
-                if (isSource) fillColor = "#4CAF50";
-                if (isDest) fillColor = "#F44336";
-                if (isActive) fillColor = "#2196F3";
-                if (isInPath && !isSource && !isDest && !isActive) fillColor = "#FFC107";
-                
-                return (
-                  <g key={`node-${node.id}`}>
-                    <circle 
-                      cx={node.x} 
-                      cy={node.y} 
-                      r={isActive ? 18 : 15}
-                      fill={fillColor} 
-                      stroke={isActive ? "#0D47A1" : "#666"}
-                      strokeWidth={isActive ? 3 : 1}
-                      onMouseDown={(e) => handleMouseDown(node.id, e)}
-                      style={{ cursor: 'move' }}
-                    />
-                    <text 
-                      x={node.x} 
-                      y={node.y + 5} 
-                      textAnchor="middle" 
-                      fill="#000" 
-                      fontSize="14" 
-                      fontWeight="bold"
-                    >
-                      {node.id}
-                    </text>
-                  </g>
-                );
-              })}
-              {packetPosition && (
-                <circle 
-                  cx={network.nodes.find(n => n.id === packetPosition)?.x} 
-                  cy={network.nodes.find(n => n.id === packetPosition)?.y} 
-                  r={8}
-                  fill="#03A9F4" 
-                  stroke="#0277BD"
-                  strokeWidth={2}
-                >
-                  <animate 
-                    attributeName="r" 
-                    values="8;10;8" 
-                    dur="1s" 
-                    repeatCount="indefinite" 
-                  />
-                </circle>
-              )}
-            </svg>
+                {/* Animated Package along the path */}
+                {isSimulating && currentPathSegment < routingPath.length - 1 && (
+                  <foreignObject
+                    x={packetPosition.x - 12}
+                    y={packetPosition.y - 12}
+                    width="24"
+                    height="24"
+                  >
+                    <Package size={24} color="#03A9F4" />
+                  </foreignObject>
+                )}
+              </svg>
           </div>
           <div className="bg-white rounded-lg shadow-md p-4 w-full md:w-96">
             <h2 className="text-lg font-semibold mb-2">Simulation Status</h2>
